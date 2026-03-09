@@ -24,15 +24,25 @@ const sbGetProducts = async () => {
   return data.map(dbRowToProduct);
 };
 const sbSetProducts = async (arr) => {
-  // Upsert all products, delete ones removed
   const rows = arr.map(productToDbRow);
   const { error } = await supabase.from("products").upsert(rows, { onConflict: "id" });
-  if (error) console.error("sbSetProducts upsert", error);
+  if (error) { console.error("sbSetProducts upsert", error); return; }
   // Delete rows whose ids are not in arr
   if (arr.length > 0) {
     const ids = arr.map(p => String(p.id));
-    await supabase.from("products").delete().not("id", "in", `(${ids.join(",")})`);
+    await supabase.from("products").delete().not("id", "in", ids);
+  } else {
+    await supabase.from("products").delete().neq("id", "");
   }
+};
+const sbUpsertProduct = async (product) => {
+  const row = productToDbRow(product);
+  const { error } = await supabase.from("products").upsert(row, { onConflict: "id" });
+  if (error) console.error("sbUpsertProduct", error);
+};
+const sbDeleteProduct = async (id) => {
+  const { error } = await supabase.from("products").delete().eq("id", String(id));
+  if (error) console.error("sbDeleteProduct", error);
 };
 const sbGetOrders = async () => {
   const { data, error } = await supabase.from("orders").select("*").order("created_at", { ascending: false });
@@ -44,10 +54,20 @@ const sbSetOrders = async (arr) => {
   const { error } = await supabase.from("orders").upsert(rows, { onConflict: "id" });
   if (error) console.error("sbSetOrders", error);
 };
+const sbUpsertOrder = async (order) => {
+  const row = orderToDbRow(order);
+  const { error } = await supabase.from("orders").upsert(row, { onConflict: "id" });
+  if (error) console.error("sbUpsertOrder", error);
+};
 const sbGetUsers = async () => {
   const { data, error } = await supabase.from("users").select("*").order("created_at");
   if (error) { console.error("sbGetUsers", error); return null; }
   return data.map(dbRowToUser);
+};
+const sbUpsertUser = async (user) => {
+  const row = userToDbRow(user);
+  const { error } = await supabase.from("users").upsert(row, { onConflict: "email" });
+  if (error) console.error("sbUpsertUser", error);
 };
 const sbSetUsers = async (arr) => {
   const rows = arr.map(userToDbRow);
@@ -676,7 +696,19 @@ export default function App() {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
   const saveProducts = async (arr) => { setProducts(arr); await sbSetProducts(arr); };
+  const saveOneProduct = async (product) => {
+    setProducts(prev => prev.some(p => p.id === product.id) ? prev.map(p => p.id === product.id ? product : p) : [...prev, product]);
+    await sbUpsertProduct(product);
+  };
+  const deleteOneProduct = async (id) => {
+    setProducts(prev => prev.filter(p => p.id !== id));
+    await sbDeleteProduct(id);
+  };
   const saveOrders = async (arr) => { setOrders(arr); await sbSetOrders(arr); };
+  const saveOneOrder = async (order) => {
+    setOrders(prev => prev.some(o => o.id === order.id) ? prev.map(o => o.id === order.id ? order : o) : [...prev, order]);
+    await sbUpsertOrder(order);
+  };
   const pushNotification = async (key, text) => {
     try {
       const isAdmin = key === "lum-notif-admin";
@@ -690,6 +722,10 @@ export default function App() {
     } catch(e){ console.error("Notif push error",e); }
   };
   const saveUsers = async (arr) => { setUsers(arr); await sbSetUsers(arr); };
+  const saveOneUser = async (user) => {
+    setUsers(prev => prev.some(u => u.email === user.email) ? prev.map(u => u.email === user.email ? user : u) : [...prev, user]);
+    await sbUpsertUser(user);
+  };
 
   const loadNotificationsForUser = async (user) => {
     try {
@@ -756,7 +792,7 @@ export default function App() {
       mobile: regForm.mobile, location: regForm.location, region: regForm.region,
       country: regForm.country, zip: regForm.zip, joinDate: new Date().toISOString()
     };
-    await saveUsers([...users, newUser]);
+    await saveOneUser(newUser);
     const newCu = { name: newUser.name, email: newUser.email, role: "customer" };
     setCurrentUser(newCu);
     setScreen("app"); showToast(`Welcome to Lumiere, ${newUser.name}! 🎉`);
@@ -787,15 +823,17 @@ export default function App() {
   const finalTotal = Math.max(0, cartTotal - discount);
 
   const placeOrder = async () => {
-    const newOrds = cart.map(item => ({
-      id: Date.now() + Math.random(),
+    const newOrds = cart.map((item, i) => ({
+      id: String(Date.now() + i),
+      customerEmail: currentUser.email, customerName: currentUser.name,
       product: item.name + (item.variation ? ` (${item.variation})` : ""),
       customer: currentUser.name, email: currentUser.email,
-      qty: item.qty, total: item.price * item.qty,
+      items: cart, qty: item.qty, total: item.price * item.qty,
       date: new Date().toLocaleDateString(), status: "pending",
       paymentMethod, voucher: appliedVoucher?.code || "", discount,
+      address: "",
     }));
-    await saveOrders([...orders, ...newOrds]);
+    for(const o of newOrds) await saveOneOrder(o);
     // Notify admin
     for(const item of newOrds){
       await pushNotification("lum-notif-admin", `🛒 New order from ${currentUser.name}: ${item.product} (₱${item.total.toLocaleString()})`);
@@ -812,8 +850,8 @@ export default function App() {
     setQuickOrderOpen(true); setQuickOrderSuccess(false);
   };
   const submitQuickOrder = async () => {
-    const newOrder = { id: Date.now(), product: quickOrderProduct.name, customer: checkoutForm.name, email: checkoutForm.email, qty: 1, total: quickOrderProduct.price, date: new Date().toLocaleDateString(), status: "pending", paymentMethod: "pending", voucher: "" };
-    await saveOrders([...orders, newOrder]);
+    const newOrder = { id: String(Date.now()), customerEmail: checkoutForm.email, customerName: checkoutForm.name, product: quickOrderProduct.name, customer: checkoutForm.name, email: checkoutForm.email, qty: 1, total: quickOrderProduct.price, date: new Date().toLocaleDateString(), status: "pending", paymentMethod: "pending", voucher: "", discount: 0, items: [], address: "" };
+    await saveOneOrder(newOrder);
     // Notify admin
     await pushNotification("lum-notif-admin", `🛒 Quick order from ${checkoutForm.name}: ${quickOrderProduct.name} (₱${quickOrderProduct.price.toLocaleString()})`);
     // Notify customer
@@ -825,16 +863,16 @@ export default function App() {
   const handleSaveProduct = async () => {
     if (!pForm.name || !pForm.price) { showToast("Name and price are required."); return; }
     if (editingId) {
-      const arr = products.map(p => p.id === editingId ? { ...p, ...pForm, price: parseFloat(pForm.price), oldPrice: parseFloat(pForm.oldPrice) || 0, stock: parseInt(pForm.stock) || 0 } : p);
-      await saveProducts(arr); showToast("Product updated! ✓");
+      const updated = { ...products.find(p => p.id === editingId), ...pForm, price: parseFloat(pForm.price), oldPrice: parseFloat(pForm.oldPrice) || 0, stock: parseInt(pForm.stock) || 0 };
+      await saveOneProduct(updated); showToast("Product updated! ✓");
     } else {
-      const np = { ...pForm, id: Date.now(), price: parseFloat(pForm.price), oldPrice: parseFloat(pForm.oldPrice) || 0, stock: parseInt(pForm.stock) || 0 };
-      await saveProducts([...products, np]); showToast("Product added! ✓");
+      const np = { ...pForm, id: String(Date.now()), price: parseFloat(pForm.price), oldPrice: parseFloat(pForm.oldPrice) || 0, stock: parseInt(pForm.stock) || 0 };
+      await saveOneProduct(np); showToast("Product added! ✓");
     }
     resetForm();
   };
   const handleEditProduct = (p) => { setPForm({ ...p, price: String(p.price), oldPrice: String(p.oldPrice || ""), stock: String(p.stock), variations: p.variations || [], images: p.images || [], variationImages: p.variationImages || {} }); setEditingId(p.id); };
-  const handleDeleteProduct = async (id) => { await saveProducts(products.filter(p => p.id !== id)); showToast("Product deleted."); };
+  const handleDeleteProduct = async (id) => { await deleteOneProduct(id); showToast("Product deleted."); };
   const addVariation = () => { if (!newVar.trim()) return; if (!pForm.variations.includes(newVar.trim())) setPForm(f => ({ ...f, variations: [...f.variations, newVar.trim()] })); setNewVar(""); };
   const removeVariation = (v) => setPForm(f => ({ ...f, variations: f.variations.filter(x => x !== v) }));
   const handleImageUpload = (e) => {
@@ -1189,8 +1227,8 @@ export default function App() {
                       <td>{o.voucher||"—"}</td><td>{o.date}</td>
                       <td><select className="status-select" value={o.status} onChange={async(e)=>{
   const newStatus=e.target.value;
-  const arr=orders.map((x,j)=>j===i?{...x,status:newStatus}:x);
-  await saveOrders(arr);
+  const updatedOrder={...o,status:newStatus};
+  await saveOneOrder(updatedOrder);
   if(o.email){
     const msgMap={
       "order confirmed":`✅ Your order "${o.product}" has been confirmed! We're getting it ready.`,
