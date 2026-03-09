@@ -1,43 +1,189 @@
 import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-// Simple localStorage store - same key = same data for all users on same browser
+// ── Supabase client ──────────────────────────────────────────────────────────
+const SUPA_URL = "https://pkwisodcqyfmcggwnrfz.supabase.co";
+const SUPA_KEY = "sb_publishable_DYfiBJjtI3STomeSNDoxBA_KrwImS5m";
+const supabase = createClient(SUPA_URL, SUPA_KEY);
+
+// ── localStorage – only used for session + last-email ────────────────────────
 const LS = {
-  get: (k) => {
-    try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; }
-    catch(e) { console.error("LS.get error",k,e); return null; }
-  },
-  set: (k, v) => {
-    try {
-      // Strip large base64 images from products before saving to avoid 5MB limit
-      let toSave = v;
-      if (k === "lum-products" && Array.isArray(v)) {
-        toSave = v.map(p => ({
-          ...p,
-          // Keep imageData only if small (<2MB), otherwise clear it
-          imageData: p.imageData && p.imageData.length < 2000000 ? p.imageData : (p.imageData ? "__has_image__" : ""),
-          images: (p.images||[]).map(img => img.length < 2000000 ? img : "__has_image__"),
-          variationImages: Object.fromEntries(
-            Object.entries(p.variationImages||{}).map(([vk,vi]) => [vk, vi.length < 2000000 ? vi : "__has_image__"])
-          ),
-        }));
-      }
-      const json = JSON.stringify(toSave);
-      localStorage.setItem(k, json);
-      console.log("LS.set OK", k, "size:", json.length, "bytes");
-    } catch(e) {
-      console.error("LS.set FAILED", k, e);
-      alert("Save failed: " + e.message + "\nTry using smaller images.");
-    }
-  },
+  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) { console.error("LS.set", k, e); } },
   del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
-// Async wrapper so existing await calls still work
+
+// ── Supabase helpers ─────────────────────────────────────────────────────────
+// Map legacy store key → { table, rowId }
+// products / orders / users → entire-table fetch/replace
+// lum-notif-* → notifications table filtered by user_email
+
+const sbGetProducts = async () => {
+  const { data, error } = await supabase.from("products").select("*").order("created_at");
+  if (error) { console.error("sbGetProducts", error); return null; }
+  return data.map(dbRowToProduct);
+};
+const sbSetProducts = async (arr) => {
+  // Upsert all products, delete ones removed
+  const rows = arr.map(productToDbRow);
+  const { error } = await supabase.from("products").upsert(rows, { onConflict: "id" });
+  if (error) console.error("sbSetProducts upsert", error);
+  // Delete rows whose ids are not in arr
+  if (arr.length > 0) {
+    const ids = arr.map(p => String(p.id));
+    await supabase.from("products").delete().not("id", "in", `(${ids.join(",")})`);
+  }
+};
+const sbGetOrders = async () => {
+  const { data, error } = await supabase.from("orders").select("*").order("created_at", { ascending: false });
+  if (error) { console.error("sbGetOrders", error); return null; }
+  return data.map(dbRowToOrder);
+};
+const sbSetOrders = async (arr) => {
+  const rows = arr.map(orderToDbRow);
+  const { error } = await supabase.from("orders").upsert(rows, { onConflict: "id" });
+  if (error) console.error("sbSetOrders", error);
+};
+const sbGetUsers = async () => {
+  const { data, error } = await supabase.from("users").select("*").order("created_at");
+  if (error) { console.error("sbGetUsers", error); return null; }
+  return data.map(dbRowToUser);
+};
+const sbSetUsers = async (arr) => {
+  const rows = arr.map(userToDbRow);
+  const { error } = await supabase.from("users").upsert(rows, { onConflict: "email" });
+  if (error) console.error("sbSetUsers", error);
+};
+const sbGetNotifs = async (userEmail) => {
+  const col = userEmail === "admin" ? null : userEmail;
+  let q = supabase.from("notifications").select("*").order("created_at", { ascending: false });
+  if (col) q = q.eq("user_email", col); else q = q.is("user_email", null);
+  const { data, error } = await q;
+  if (error) { console.error("sbGetNotifs", error); return null; }
+  return data.map(r => ({ id: r.id, text: r.message, time: new Date(r.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}), read: r.read }));
+};
+const sbPushNotif = async (userEmail, text) => {
+  const col = userEmail === "admin" ? null : userEmail;
+  const { error } = await supabase.from("notifications").insert({ id: String(Date.now()), user_email: col, message: text, read: false });
+  if (error) console.error("sbPushNotif", error);
+};
+const sbMarkNotifsRead = async (userEmail) => {
+  const col = userEmail === "admin" ? null : userEmail;
+  let q = supabase.from("notifications").update({ read: true });
+  if (col) q = q.eq("user_email", col); else q = q.is("user_email", null);
+  const { error } = await q;
+  if (error) console.error("sbMarkNotifsRead", error);
+};
+
+// ── Row ↔ App object converters ───────────────────────────────────────────────
+function productToDbRow(p) {
+  return {
+    id: String(p.id),
+    name: p.name || "",
+    category: p.category || "",
+    emoji: p.emoji || "",
+    price: Number(p.price) || 0,
+    old_price: Number(p.oldPrice) || 0,
+    stock: Number(p.stock) || 0,
+    badge: p.badge || "",
+    description: p.description || "",
+    image_data: p.imageData || "",
+    images: p.images || [],
+    variations: p.variations || [],
+    variation_images: p.variationImages || {},
+  };
+}
+function dbRowToProduct(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    category: r.category,
+    emoji: r.emoji,
+    price: r.price,
+    oldPrice: r.old_price,
+    stock: r.stock,
+    badge: r.badge,
+    description: r.description,
+    imageData: r.image_data || "",
+    images: r.images || [],
+    variations: r.variations || [],
+    variationImages: r.variation_images || {},
+  };
+}
+function orderToDbRow(o) {
+  return {
+    id: String(o.id),
+    customer_email: o.customerEmail || o.customer_email || "",
+    customer_name: o.customerName || o.customer_name || "",
+    items: o.items || [],
+    total: Number(o.total) || 0,
+    status: o.status || "pending",
+    payment_method: o.paymentMethod || o.payment_method || "",
+    address: o.address || "",
+    voucher: o.voucher || "",
+    discount: Number(o.discount) || 0,
+  };
+}
+function dbRowToOrder(r) {
+  return {
+    id: r.id,
+    customerEmail: r.customer_email,
+    customerName: r.customer_name,
+    items: r.items || [],
+    total: r.total,
+    status: r.status,
+    paymentMethod: r.payment_method,
+    address: r.address,
+    voucher: r.voucher,
+    discount: r.discount,
+    date: r.created_at ? new Date(r.created_at).toLocaleDateString() : "",
+  };
+}
+function userToDbRow(u) {
+  return {
+    email: u.email,
+    name: u.name || "",
+    password: u.password || "",
+    role: u.role || "customer",
+    mobile: u.mobile || "",
+    location: u.location || "",
+    region: u.region || "",
+    country: u.country || "Philippines",
+    zip: u.zip || "",
+  };
+}
+function dbRowToUser(r) {
+  return {
+    email: r.email,
+    name: r.name,
+    password: r.password,
+    role: r.role,
+    mobile: r.mobile,
+    location: r.location,
+    region: r.region,
+    country: r.country,
+    zip: r.zip,
+    joinDate: r.created_at,
+  };
+}
+
+// ── Thin store shim so app code stays the same ────────────────────────────────
+// session + last-email stay in localStorage; everything else uses Supabase
 const store = {
-  get: async (k) => LS.get(k),
-  set: async (k, v) => LS.set(k, v),
-  del: async (k) => LS.del(k),
-  getShared: async (k) => LS.get(k),
-  setShared: async (k, v) => LS.set(k, v),
+  get: async (k) => {
+    if (k === "lum-session") return LS.get(k);
+    return null;
+  },
+  set: async (k, v) => {
+    if (k === "lum-session") LS.set(k, v);
+    // other per-user keys are now handled via Supabase helpers directly
+  },
+  del: async (k) => {
+    if (k === "lum-session") LS.del(k);
+  },
+  // kept for compatibility – actual work done by sb* helpers
+  getShared: async (k) => null,
+  setShared: async (k, v) => {},
 };
 
 const SEED_PRODUCTS = [
@@ -484,61 +630,35 @@ export default function App() {
     style.textContent = CSS;
     document.head.appendChild(style);
     (async () => {
-      // Migrate: move old "shared:lum-*" keys to plain keys if they exist
-      ["lum-products","lum-orders","lum-users"].forEach(k => {
-        const old = localStorage.getItem("shared:"+k);
-        if (old) { localStorage.setItem(k, old); localStorage.removeItem("shared:"+k); }
-      });
-      const p = await store.getShared("lum-products");
-      const o = await store.getShared("lum-orders");
-      const u = await store.getShared("lum-users");
-      // If no products saved yet, save SEED_PRODUCTS so the key exists
+      const [p, o, u] = await Promise.all([sbGetProducts(), sbGetOrders(), sbGetUsers()]);
       const loadedProducts = Array.isArray(p) && p.length > 0 ? p : SEED_PRODUCTS;
-      if (!Array.isArray(p) || p.length === 0) await store.setShared("lum-products", SEED_PRODUCTS);
-      const loadedOrders = Array.isArray(o) ? o : [];
-      const loadedUsers = Array.isArray(u) ? u : [];
+      if (!Array.isArray(p) || p.length === 0) await sbSetProducts(SEED_PRODUCTS);
       setProducts(loadedProducts);
-      setOrders(loadedOrders);
-      setUsers(loadedUsers);
-      // Restore session from storage
-      const session = await store.get("lum-session");
+      setOrders(Array.isArray(o) ? o : []);
+      setUsers(Array.isArray(u) ? u : []);
+      const session = LS.get("lum-session");
       if(session && session.role) {
         setCurrentUser(session);
         setScreen("app");
-        // Load notifications for restored user
-        const key = session.role === "admin" ? "lum-notif-admin" : "lum-notif-" + session.email;
-        const n = session.role === "admin" ? await store.getShared(key) : await store.get(key);
+        const notifEmail = session.role === "admin" ? "admin" : session.email;
+        const n = await sbGetNotifs(notifEmail);
         if(Array.isArray(n) && n.length > 0) setNotifications(n);
         else setNotifications(session.role==="customer"?[{id:1,text:"Welcome to Lumiere! Enjoy shopping. 🎒",time:"Today",read:false}]:[]);
       }
     })();
   }, []);
 
-  // Always poll products/orders so shop stays fresh for everyone (logged in or not)
+  // Poll Supabase every 5s so data stays fresh for all users
   useEffect(() => {
-    // Also listen for storage changes from other tabs instantly
-    const onStorage = (e) => {
-      if (e.key === "lum-products") {
-        try { const p = JSON.parse(e.newValue); if(Array.isArray(p)) setProducts(p); } catch {}
-      }
-      if (e.key === "lum-orders") {
-        try { const o = JSON.parse(e.newValue); if(Array.isArray(o)) setOrders(o); } catch {}
-      }
-    };
-    window.addEventListener("storage", onStorage);
-
     const interval = setInterval(async () => {
       try {
-        const latestProducts = LS.get("lum-products");
-        if(Array.isArray(latestProducts)) setProducts(latestProducts);
-        const latestOrders = LS.get("lum-orders");
-        if(Array.isArray(latestOrders)) setOrders(latestOrders);
-        const latestUsers = LS.get("lum-users");
-        if(Array.isArray(latestUsers)) setUsers(latestUsers);
+        const [p, o, u] = await Promise.all([sbGetProducts(), sbGetOrders(), sbGetUsers()]);
+        if(Array.isArray(p)) setProducts(p);
+        if(Array.isArray(o)) setOrders(o);
+        if(Array.isArray(u)) setUsers(u);
       } catch(e){}
-    }, 3000);
-
-    return () => { clearInterval(interval); window.removeEventListener("storage", onStorage); };
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   // Poll notifications only when logged in
@@ -546,8 +666,8 @@ export default function App() {
     if(!currentUser) return;
     const interval = setInterval(async () => {
       try {
-        const key = currentUser.role==="admin" ? "lum-notif-admin" : "lum-notif-"+currentUser.email;
-        const n = currentUser.role==="admin" ? await store.getShared(key) : await store.get(key);
+        const notifEmail = currentUser.role==="admin" ? "admin" : currentUser.email;
+        const n = await sbGetNotifs(notifEmail);
         if(Array.isArray(n)) setNotifications(n);
       } catch(e){}
     }, 5000);
@@ -555,29 +675,26 @@ export default function App() {
   }, [currentUser]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
-  const saveProducts = async (arr) => { setProducts(arr); await store.setShared("lum-products", arr); };
-  const saveOrders = async (arr) => { setOrders(arr); await store.setShared("lum-orders", arr); };
+  const saveProducts = async (arr) => { setProducts(arr); await sbSetProducts(arr); };
+  const saveOrders = async (arr) => { setOrders(arr); await sbSetOrders(arr); };
   const pushNotification = async (key, text) => {
     try {
       const isAdmin = key === "lum-notif-admin";
-      // Admin notifications go in SHARED storage so any logged-in admin can read them
-      // Customer notifications go in personal storage
-      const existing = isAdmin ? await store.getShared(key) : await store.get(key);
-      const arr = Array.isArray(existing) ? existing : [];
-      const updated = [{id:Date.now(),text,time:new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),read:false},...arr];
-      if(isAdmin) await store.setShared(key, updated);
-      else await store.set(key, updated);
+      const notifEmail = isAdmin ? "admin" : key.replace("lum-notif-", "");
+      await sbPushNotif(notifEmail, text);
       // Update live state if this key belongs to the currently logged-in user
-      const myKey = currentUser?.role==="admin" ? "lum-notif-admin" : "lum-notif-"+(currentUser?.email||"");
-      if(key === myKey) setNotifications(updated);
+      const myEmail = currentUser?.role==="admin" ? "admin" : (currentUser?.email||"");
+      if(notifEmail === myEmail) {
+        setNotifications(prev => [{id:Date.now(),text,time:new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),read:false},...prev]);
+      }
     } catch(e){ console.error("Notif push error",e); }
   };
-  const saveUsers = async (arr) => { setUsers(arr); await store.setShared("lum-users", arr); };
+  const saveUsers = async (arr) => { setUsers(arr); await sbSetUsers(arr); };
 
   const loadNotificationsForUser = async (user) => {
     try {
-      const key = user.role === "admin" ? "lum-notif-admin" : "lum-notif-" + user.email;
-      const n = user.role === "admin" ? await store.getShared(key) : await store.get(key);
+      const notifEmail = user.role === "admin" ? "admin" : user.email;
+      const n = await sbGetNotifs(notifEmail);
       if(Array.isArray(n) && n.length > 0) setNotifications(n);
       else setNotifications(user.role==="customer"?[{id:1,text:"Welcome to Lumiere! Enjoy shopping. 🎒",time:"Today",read:false}]:[]);
     } catch(e){ setNotifications([]); }
@@ -586,9 +703,8 @@ export default function App() {
   const markNotifsRead = async () => {
     const updated = notifications.map(n => ({...n, read:true}));
     setNotifications(updated);
-    const key = currentUser?.role==="admin" ? "lum-notif-admin" : "lum-notif-"+(currentUser?.email||"");
-    if(currentUser?.role==="admin") await store.setShared(key, updated);
-    else await store.set(key, updated);
+    const notifEmail = currentUser?.role==="admin" ? "admin" : (currentUser?.email||"");
+    await sbMarkNotifsRead(notifEmail);
   };
 
   const handleLogin = async () => {
@@ -603,7 +719,7 @@ export default function App() {
       setCurrentUser(adminUser);
       setScreen("app");
       showToast("Welcome back, Admin! 👋");
-      await store.set("lum-session", adminUser);
+      LS.set("lum-session", adminUser);
       loadNotificationsForUser(adminUser);
     } else {
       const u = users.find(u =>
@@ -614,7 +730,7 @@ export default function App() {
         const cu = { name: u.name, email: u.email, role: "customer" };
         setCurrentUser(cu); setScreen("app");
         showToast(`Welcome back, ${u.name}! 🎒`);
-        store.set("lum-session", cu);
+        LS.set("lum-session", cu);
         LS.set("lum-last-email", u.email);
         loadNotificationsForUser(cu);
       } else { setAuthError("Incorrect email or password."); }
@@ -644,10 +760,10 @@ export default function App() {
     const newCu = { name: newUser.name, email: newUser.email, role: "customer" };
     setCurrentUser(newCu);
     setScreen("app"); showToast(`Welcome to Lumiere, ${newUser.name}! 🎉`);
-    store.set("lum-session", newCu);
+    LS.set("lum-session", newCu);
     loadNotificationsForUser(newCu);
   };
-  const handleLogout = () => { setCurrentUser(null); setScreen("auth"); setCart([]); setCartOpen(false); setViewProduct(null); setNotifications([]); setDashboardOpen(false); store.del("lum-session"); };
+  const handleLogout = () => { setCurrentUser(null); setScreen("auth"); setCart([]); setCartOpen(false); setViewProduct(null); setNotifications([]); setDashboardOpen(false); LS.del("lum-session"); };
 
   const addToCart = (product, qty = 1, variation = "") => {
     setCart(prev => {
