@@ -25,20 +25,24 @@ const sbGetProducts = async () => {
 };
 const sbSetProducts = async (arr) => {
   const rows = arr.map(productToDbRow);
-  const { error } = await supabase.from("products").upsert(rows, { onConflict: "id" });
-  if (error) { console.error("sbSetProducts upsert", error); return; }
-  // Delete rows whose ids are not in arr
+  const { data, error, status } = await supabase.from("products").upsert(rows, { onConflict: "id" }).select();
+  if (error) { console.error("sbSetProducts upsert ERROR:", error, status); return; }
+  console.log("sbSetProducts upsert OK:", status, data?.length, "rows");
   if (arr.length > 0) {
     const ids = arr.map(p => String(p.id));
-    await supabase.from("products").delete().not("id", "in", ids);
+    const { error: delErr } = await supabase.from("products").delete().not("id", "in", ids);
+    if (delErr) console.error("sbSetProducts delete ERROR:", delErr);
   } else {
     await supabase.from("products").delete().neq("id", "");
   }
 };
 const sbUpsertProduct = async (product) => {
   const row = productToDbRow(product);
-  const { error } = await supabase.from("products").upsert(row, { onConflict: "id" });
-  if (error) console.error("sbUpsertProduct", error);
+  console.log("sbUpsertProduct row:", JSON.stringify(row).slice(0, 200));
+  const { data, error, status, statusText } = await supabase.from("products").upsert(row, { onConflict: "id" }).select();
+  if (error) console.error("sbUpsertProduct ERROR:", error, status, statusText);
+  else console.log("sbUpsertProduct OK:", status, data?.length, "rows");
+  return !error;
 };
 const sbDeleteProduct = async (id) => {
   const { error } = await supabase.from("products").delete().eq("id", String(id));
@@ -668,8 +672,26 @@ export default function App() {
     })();
   }, []);
 
-  // Poll Supabase every 5s so data stays fresh for all users
+  // Supabase Realtime — instant sync across all devices
   useEffect(() => {
+    const channel = supabase
+      .channel("db-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "products" }, async () => {
+        const p = await sbGetProducts();
+        if (Array.isArray(p)) setProducts(p);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, async () => {
+        const o = await sbGetOrders();
+        if (Array.isArray(o)) setOrders(o);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, async () => {
+        const u = await sbGetUsers();
+        if (Array.isArray(u)) setUsers(u);
+      })
+      .subscribe((status) => {
+        console.log("Realtime status:", status);
+      });
+    // Also keep a 10s fallback poll in case realtime is blocked
     const interval = setInterval(async () => {
       try {
         const [p, o, u] = await Promise.all([sbGetProducts(), sbGetOrders(), sbGetUsers()]);
@@ -677,8 +699,8 @@ export default function App() {
         if(Array.isArray(o)) setOrders(o);
         if(Array.isArray(u)) setUsers(u);
       } catch(e){}
-    }, 5000);
-    return () => clearInterval(interval);
+    }, 10000);
+    return () => { supabase.removeChannel(channel); clearInterval(interval); };
   }, []);
 
   // Poll notifications only when logged in
