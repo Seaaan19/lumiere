@@ -68,7 +68,8 @@ const CSS = `
   --white:#fffdf9;--muted:#9a7050;--border:rgba(61,31,7,0.12);
   --shadow:0 4px 24px rgba(30,15,5,0.1);--shadow-lg:0 12px 48px rgba(30,15,5,0.18);
 }
-html,body,#root{width:100%;min-height:100vh;}
+html,body,#root{width:100%;min-height:100vh;overflow-x:hidden;}
+@media(max-width:768px){.nav{padding:0 1rem;}.hero{padding:2.5rem 1rem;}.hero h1{font-size:2.2rem;}.shop-controls{padding:1rem;}.product-page{padding:1rem;}}
 body{font-family:'DM Sans',sans-serif;background:var(--white);color:var(--ink);overflow-x:hidden;}
 ::-webkit-scrollbar{width:6px;}
 ::-webkit-scrollbar-track{background:var(--cream);}
