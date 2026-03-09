@@ -69,7 +69,21 @@ const CSS = `
   --shadow:0 4px 24px rgba(30,15,5,0.1);--shadow-lg:0 12px 48px rgba(30,15,5,0.18);
 }
 html,body,#root{width:100%;min-height:100vh;overflow-x:hidden;}
-@media(max-width:768px){.nav{padding:0 0.5rem;}.nav-user span{display:none;}.nav-btn{padding:0.4rem 0.6rem;font-size:0.75rem;}.nav-dash-btn{padding:0.4rem 0.6rem;font-size:0.75rem;}.hero{padding:2.5rem 1rem;}.hero h1{font-size:2.2rem;}.shop-controls{padding:1rem;}.product-page{padding:1rem;}}
+@media(max-width:768px){
+.nav{padding:0 0.5rem;}
+.nav-right{gap:0.35rem;}
+.nav-user span{display:none;}
+.nav-user .nav-avatar{width:28px;height:28px;font-size:0.75rem;}
+.nav-btn{padding:0.35rem 0.5rem;font-size:0.72rem;}
+.nav-dash-btn{padding:0.35rem 0.5rem;font-size:0.72rem;}
+.nav-dash-btn .nav-btn-label{display:none;}
+.nav-btn-logout{display:none;}
+.nav-logo img{height:44px;}
+.hero{padding:2.5rem 1rem;}
+.hero h1{font-size:2.2rem;}
+.shop-controls{padding:1rem;}
+.product-page{padding:1rem;}
+}
 body{font-family:'DM Sans',sans-serif;background:var(--white);color:var(--ink);overflow-x:hidden;}
 ::-webkit-scrollbar{width:6px;}
 ::-webkit-scrollbar-track{background:var(--cream);}
@@ -828,7 +842,7 @@ export default function App() {
           <div className="nav-right">
             <div className="nav-user"><div className="nav-avatar">{currentUser.name[0]}</div><span style={{color:"var(--cream)"}}>{currentUser.name}</span></div>
             <button className="cart-btn" onClick={()=>setCartOpen(true)}>🛒 Cart {cartCount>0&&<span className="cart-badge">{cartCount}</span>}</button>
-            <button className="nav-btn" onClick={handleLogout}>Logout</button>
+            <button className="nav-btn nav-btn-logout" onClick={handleLogout}>Logout</button>
           </div>
         </nav>
         <div className="product-page">
@@ -920,7 +934,7 @@ export default function App() {
             🔔 Notifications
             {notifications.filter(n=>!n.read).length>0&&<span className="nav-dash-notif">{notifications.filter(n=>!n.read).length}</span>}
           </button>}
-          <button className="nav-btn" onClick={handleLogout}>Logout</button>
+          <button className="nav-btn nav-btn-logout" onClick={handleLogout}>Logout</button>
         </div>
       </nav>
 
