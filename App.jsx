@@ -631,7 +631,7 @@ export default function App() {
   const [regForm, setRegForm] = useState({ name: "", email: "", password: "", confirm: "", mobile: "", location: "", region: "", country: "Philippines", zip: "" });
   const [authError, setAuthError] = useState("");
   const [pForm, setPForm] = useState({ name: "", category: "", emoji: "", price: "", oldPrice: "", stock: "", badge: "", description: "", imageData: "", images: [], variations: [], variationImages: {} });
-  const [newVar, setNewVar] = useState("");
+  const [newVar, setNewVar] = useState({ name: "", price: "" });
   const [checkoutForm, setCheckoutForm] = useState({ name: "", email: "", address: "" });
   const [quickOrderProduct, setQuickOrderProduct] = useState(null);
   const [quickOrderOpen, setQuickOrderOpen] = useState(false);
@@ -824,10 +824,13 @@ export default function App() {
   const handleLogout = () => { setCurrentUser(null); setScreen("auth"); setCart([]); setCartOpen(false); setViewProduct(null); setNotifications([]); setDashboardOpen(false); LS.del("lum-session"); };
 
   const addToCart = (product, qty = 1, variation = "") => {
+    const varObj = product.variations?.find(v=>(typeof v==="object"?v.name:v)===variation);
+    const varPrice = varObj && typeof varObj==="object" && varObj.price ? varObj.price : product.price;
+    const cartProduct = { ...product, price: varPrice };
     setCart(prev => {
       const ex = prev.find(i => i.id === product.id && i.variation === variation);
       if (ex) return prev.map(i => i.id === product.id && i.variation === variation ? { ...i, qty: i.qty + qty } : i);
-      return [...prev, { ...product, qty, variation }];
+      return [...prev, { ...cartProduct, qty, variation }];
     });
     showToast(`${product.name} added to cart! 🛒`);
   };
@@ -895,8 +898,8 @@ export default function App() {
   };
   const handleEditProduct = (p) => { setPForm({ ...p, price: String(p.price), oldPrice: String(p.oldPrice || ""), stock: String(p.stock), variations: p.variations || [], images: p.images || [], variationImages: p.variationImages || {} }); setEditingId(p.id); };
   const handleDeleteProduct = async (id) => { await deleteOneProduct(id); showToast("Product deleted."); };
-  const addVariation = () => { if (!newVar.trim()) return; if (!pForm.variations.includes(newVar.trim())) setPForm(f => ({ ...f, variations: [...f.variations, newVar.trim()] })); setNewVar(""); };
-  const removeVariation = (v) => setPForm(f => ({ ...f, variations: f.variations.filter(x => x !== v) }));
+  const addVariation = () => { if (!newVar.name.trim()) return; if (!pForm.variations.find(v=>(typeof v==="object"?v.name:v)===newVar.name.trim())) setPForm(f => ({ ...f, variations: [...f.variations, { name: newVar.name.trim(), price: parseFloat(newVar.price) || null }] })); setNewVar({ name: "", price: "" }); };
+  const removeVariation = (v) => setPForm(f => ({ ...f, variations: f.variations.filter(x => (typeof x==="object"?x.name:x) !== (typeof v==="object"?v.name:v)) }));
   const handleImageUpload = (e) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
@@ -1050,11 +1053,17 @@ export default function App() {
             <div className="detail-info">
               <div className="detail-cat">{p.category}</div>
               <div className="detail-name">{p.name}</div>
-              <div className="detail-price">
-                <span className="detail-price-main">₱{p.price.toLocaleString()}</span>
-                {p.oldPrice>0&&<span className="detail-price-old">₱{p.oldPrice.toLocaleString()}</span>}
-              </div>
-              {p.oldPrice>0&&<div className="detail-savings">You save ₱{(p.oldPrice-p.price).toLocaleString()}</div>}
+              {(()=>{
+                const selVarObj = p.variations?.find(v=>(typeof v==="object"?v.name:v)===selectedVariation);
+                const displayPrice = (selVarObj && typeof selVarObj==="object" && selVarObj.price) ? selVarObj.price : p.price;
+                return (<>
+                  <div className="detail-price">
+                    <span className="detail-price-main">₱{displayPrice.toLocaleString()}</span>
+                    {p.oldPrice>0&&<span className="detail-price-old">₱{p.oldPrice.toLocaleString()}</span>}
+                  </div>
+                  {p.oldPrice>0&&<div className="detail-savings">You save ₱{(p.oldPrice-displayPrice).toLocaleString()}</div>}
+                </>);
+              })()}
               <hr className="detail-divider"/>
               <div className="detail-desc">{p.description||"No description available."}</div>
               <div className={"detail-stock"+(p.stock<=5?" low":"")}>{p.stock>0?`✓ ${p.stock} in stock`:"✕ Out of stock"}</div>
@@ -1062,12 +1071,16 @@ export default function App() {
                 <div className="variations-section">
                   <div className="variations-label">Select Option</div>
                   <div className="variations-list">
-                    {p.variations.map(v=>(
-                      <div key={v} className={"variation-chip"+(selectedVariation===v?" selected":"")} onClick={()=>{setSelectedVariation(v===selectedVariation?"":v);setDetailImgIndex(0);}}>
-                        {p.variationImages?.[v] && <img src={p.variationImages[v]} style={{width:18,height:18,objectFit:"cover",borderRadius:3,marginRight:4,verticalAlign:"middle"}} alt=""/>}
-                        {v}
-                      </div>
-                    ))}
+                    {p.variations.map(v=>{
+                      const vName = typeof v==="object"?v.name:v;
+                      const vPrice = typeof v==="object"&&v.price?v.price:null;
+                      return (
+                        <div key={vName} className={"variation-chip"+(selectedVariation===vName?" selected":"")} onClick={()=>{setSelectedVariation(vName===selectedVariation?"":vName);setDetailImgIndex(0);}}>
+                          {p.variationImages?.[vName] && <img src={p.variationImages[vName]} style={{width:18,height:18,objectFit:"cover",borderRadius:3,marginRight:4,verticalAlign:"middle"}} alt=""/>}
+                          {vName}{vPrice?<span style={{marginLeft:"0.3rem",fontSize:"0.75rem",color:"var(--amber)",fontWeight:700}}>₱{vPrice.toLocaleString()}</span>:null}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1188,22 +1201,23 @@ export default function App() {
                     <div style={{display:"flex",flexDirection:"column",gap:"0.4rem",marginBottom:"0.5rem"}}>
                       {pForm.variations.map(v=>(
                         <div key={v} style={{display:"flex",alignItems:"center",gap:"0.5rem",background:"var(--cream)",borderRadius:8,padding:"0.35rem 0.6rem"}}>
-                          <span style={{flex:1,fontSize:"0.85rem",fontWeight:600}}>{v}</span>
-                          {pForm.variationImages[v]
+                          <span style={{flex:1,fontSize:"0.85rem",fontWeight:600}}>{typeof v==="object"?v.name:v}{typeof v==="object"&&v.price?<span style={{color:"var(--amber)",marginLeft:"0.4rem"}}>₱{v.price}</span>:null}</span>
+                          {pForm.variationImages[typeof v==="object"?v.name:v]
                             ? <div style={{position:"relative"}}>
                                 <img src={pForm.variationImages[v]} style={{width:36,height:36,objectFit:"cover",borderRadius:4,border:"1px solid var(--border)"}} alt={v}/>
-                                <button onClick={()=>setPForm(f=>{const vi={...f.variationImages};delete vi[v];return{...f,variationImages:vi};})} style={{position:"absolute",top:-4,right:-4,width:14,height:14,background:"var(--rust)",color:"#fff",border:"none",borderRadius:"50%",fontSize:"0.55rem",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+                                <button onClick={()=>setPForm(f=>{const vi={...f.variationImages};delete vi[typeof v==="object"?v.name:v];return{...f,variationImages:vi};})} style={{position:"absolute",top:-4,right:-4,width:14,height:14,background:"var(--rust)",color:"#fff",border:"none",borderRadius:"50%",fontSize:"0.55rem",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
                               </div>
                             : <label style={{fontSize:"0.7rem",color:"var(--amber)",cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
                                 📷 Add image
-                                <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>handleVariationImageUpload(v,e)}/>
+                                <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>handleVariationImageUpload(typeof v==="object"?v.name:v,e)}/>
                               </label>}
                           <button className="variation-remove" onClick={()=>removeVariation(v)} style={{marginLeft:"auto"}}>✕</button>
                         </div>
                       ))}
                     </div>
                     <div className="variation-add-row">
-                      <input className="variation-add-input" value={newVar} onChange={e=>setNewVar(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addVariation()} placeholder='"Small", "Red", "A4"' />
+                      <input className="variation-add-input" value={newVar.name} onChange={e=>setNewVar(f=>({...f,name:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&addVariation()} placeholder='e.g. Small, Red, A4' style={{flex:2}} />
+                      <input className="variation-add-input" value={newVar.price} onChange={e=>setNewVar(f=>({...f,price:e.target.value}))} placeholder="Price (optional)" type="number" style={{flex:1}} />
                       <button className="btn-add-var" onClick={addVariation}>+ Add</button>
                     </div>
                   </div>
@@ -1312,7 +1326,12 @@ function ProductCard({p,onAddCart,onQuickOrder,onClick}) {
         <div className="product-cat">{p.category}</div>
         <div className="product-name">{p.name}</div>
         {p.stock<=5&&p.stock>0&&<div className="stock-warn">Only {p.stock} left!</div>}
-        <div className="product-price"><span className="price-main">₱{p.price}</span>{p.oldPrice>0&&<span className="price-old">₱{p.oldPrice}</span>}</div>
+        <div className="product-price">{(()=>{
+          const varPrices = (p.variations||[]).map(v=>typeof v==="object"&&v.price?v.price:null).filter(Boolean);
+          const minP = varPrices.length ? Math.min(...varPrices) : p.price;
+          const maxP = varPrices.length ? Math.max(...varPrices) : p.price;
+          return <><span className="price-main">{varPrices.length&&minP!==maxP?`₱${minP.toLocaleString()} – ₱${maxP.toLocaleString()}`:`₱${p.price.toLocaleString()}`}</span>{p.oldPrice>0&&<span className="price-old">₱{p.oldPrice.toLocaleString()}</span>}</>;
+        })()}</div>
         <div className="product-footer">
           <button className={"btn-cart"+(added?" added":"")} onClick={handleAdd}>{added?"✓ Added":"🛒 Add"}</button>
           <button className="btn-order" onClick={onQuickOrder}>Order</button>
